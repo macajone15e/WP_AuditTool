@@ -16,7 +16,9 @@ from app.constants import (
     DISCORD_MAX_EMBED_DESCRIPTION,
     DISCORD_MAX_EMBEDS_PER_MESSAGE,
     DISCORD_MAX_TOTAL_CHARS,
+    DOMAIN_CHECK_EMOJI,
     SEVERITY_EMOJI,
+    DomainCheckStatus,
     Severity,
 )
 from app.models.audit import AuditReport, VulnerabilitySummary
@@ -39,6 +41,27 @@ class DiscordService:
         payloads = self._build_payloads(report)
         return await self._post_payloads(webhook_url, payloads)
 
+    async def send_start_message(self, webhook_url: str, url: str) -> None:
+        """Send an 'audit started' message to Discord.
+
+        Args:
+            webhook_url: Discord webhook URL.
+            url: Target URL being audited.
+
+        """
+        embed = {
+            "title": "🚀 Audit Started",
+            "description": (
+                f"🌐 **Target**: {url}\n\n"
+                "⏳ Running WPScan + domain security checks…\n"
+                "Results will be posted here once complete."
+            ),
+            "color": DISCORD_COLOR_BLUE,
+            "timestamp": datetime.now(tz=UTC).isoformat(),
+        }
+        payload = self._wrap_payload([embed])
+        await self._post_payloads(webhook_url, [payload])
+
     # Payload construction
 
     def _build_payloads(self, report: AuditReport) -> list[dict]:
@@ -51,6 +74,7 @@ class DiscordService:
             self._build_users_embed,
             self._build_sensitive_files_embed,
             self._build_interesting_findings_embed,
+            self._build_domain_security_embed,
             self._build_stats_embed,
         ]
 
@@ -294,6 +318,135 @@ class DiscordService:
             "title": f"🔎 Findings ({len(report.interesting_findings)})",
             "description": self._truncate("\n".join(lines)),
             "color": DISCORD_COLOR_BLUE,
+        }
+
+    def _build_domain_security_embed(self, report: AuditReport) -> dict | None:
+        """Domain security checks embed."""
+        ds = report.domain_security
+        if ds is None:
+            return None
+
+        emoji = DOMAIN_CHECK_EMOJI
+        lines = [f"🌐 **Domain**: `{ds.domain}`", ""]
+
+        # WHOIS section
+        w = ds.whois
+        lines.append(f"{emoji.get(w.status, '⚪')} **WHOIS**")
+        if w.status == DomainCheckStatus.ERROR:
+            lines.append(f"  ↳ Error: {w.error[:100]}")
+        else:
+            if w.expiration_date:
+                remaining = w.days_until_expiry
+                days_label = f" ({remaining}d remaining)" if remaining is not None else ""
+                lines.append(f"  ↳ Expires: `{w.expiration_date}`{days_label}")
+            lock = "✅ Enabled" if w.transfer_locked else "❌ Disabled"
+            lines.append(f"  ↳ Transfer lock: {lock}")
+            lines.append(f"  ↳ Privacy: {'✅ Enabled' if w.privacy_enabled else '⚠️ Exposed'}")
+            if w.registrar:
+                lines.append(f"  ↳ Registrar: `{w.registrar}`")
+
+        # DNS section
+        d = ds.dns
+        dns_title = "**DNS Records**"
+        if d.cloudflare_detected:
+            dns_title = "**DNS Records** ☁️ Cloudflare"
+        lines.append(f"\n{emoji.get(d.status, '⚪')} {dns_title}")
+        if d.status == DomainCheckStatus.ERROR:
+            lines.append(f"  ↳ Error: {d.error[:100]}")
+        else:
+            record_parts = []
+            if d.has_a_record:
+                record_parts.append("A")
+            if d.has_aaaa_record:
+                record_parts.append("AAAA")
+            if d.has_mx_record:
+                record_parts.append("MX")
+            if d.has_ns_record:
+                record_parts.append("NS")
+            lines.append(f"  ↳ Records: {', '.join(record_parts) or 'None'}")
+            if d.cloudflare_proxied:
+                lines.append("  ↳ ⚠️ A/AAAA → Cloudflare proxy (real IP hidden)")
+            lines.append(f"  ↳ www redirect: {'✅' if d.www_resolves else '❌'}"
+                         f"{f' → `{d.www_target}`' if d.www_target else ''}")
+            lines.append(f"  ↳ SPF: {'✅' if d.has_spf else '❌'}"
+                         f" | DMARC: {'✅' if d.has_dmarc else '❌'}")
+
+        # SSL section
+        s = ds.ssl
+        lines.append(f"\n{emoji.get(s.status, '⚪')} **SSL/TLS Certificate**")
+        if s.error:
+            lines.append(f"  ↳ {s.error[:100]}")
+        else:
+            lines.append(f"  ↳ Issuer: `{s.issuer}`")
+            if s.days_until_expiry is not None:
+                lines.append(f"  ↳ Expires in {s.days_until_expiry} days")
+            lines.append(f"  ↳ Protocol: `{s.protocol_version}`")
+            lines.append(f"  ↳ Valid: {'✅' if s.is_valid else '❌'}")
+
+        # HSTS section
+        h = ds.hsts
+        lines.append(f"\n{emoji.get(h.status, '⚪')} **HSTS**")
+        if h.error:
+            lines.append(f"  ↳ Error: {h.error[:100]}")
+        elif h.enabled:
+            parts = [f"max-age={h.max_age}"]
+            if h.include_subdomains:
+                parts.append("includeSubDomains")
+            if h.preload:
+                parts.append("preload")
+            lines.append(f"  ↳ {'; '.join(parts)}")
+        else:
+            lines.append("  ↳ ❌ Not configured")
+
+        # DNSSEC section
+        sec = ds.dnssec
+        lines.append(f"\n{emoji.get(sec.status, '⚪')} **DNSSEC**")
+        if sec.error:
+            lines.append(f"  ↳ Error: {sec.error[:100]}")
+        elif sec.enabled:
+            # Show individual signals
+            ad_icon = "✅" if sec.ad_flag else "❌"
+            rrsig_icon = "✅" if sec.has_rrsig else "❌"
+            dnskey_icon = "✅" if sec.has_dnskey else "❌"
+            ds_icon = "✅" if sec.ds_records_found else "❌"
+            lines.append(
+                f"  ↳ AD: {ad_icon} | RRSIG: {rrsig_icon}"
+                f" | DNSKEY: {dnskey_icon} | DS: {ds_icon}",
+            )
+            if sec.algorithm:
+                lines.append(f"  ↳ Algorithm: `{sec.algorithm}`")
+            if sec.rrsig_signer:
+                lines.append(f"  ↳ Signer: `{sec.rrsig_signer}`")
+            if sec.validation_method:
+                method_label = {
+                    "ad_flag": "AD flag (resolver-validated)",
+                    "rrsig": "RRSIG signature",
+                    "dnskey": "DNSKEY record",
+                    "ds": "DS record",
+                }.get(sec.validation_method, sec.validation_method)
+                lines.append(f"  ↳ Validated via: {method_label}")
+        else:
+            lines.append("  ↳ ❌ Not enabled")
+
+        # Summary footer
+        cs = ds.checks_summary
+        lines.append(
+            f"\n**Summary**: {cs.passed} passed, "
+            f"{cs.warnings} warnings, {cs.failed} failed",
+        )
+
+        # Pick colour from the worst status
+        if cs.failed > 0:
+            color = DISCORD_COLOR_RED
+        elif cs.warnings > 0:
+            color = DISCORD_COLOR_YELLOW
+        else:
+            color = DISCORD_COLOR_GREEN
+
+        return {
+            "title": "🔒 Domain Security",
+            "description": self._truncate("\n".join(lines)),
+            "color": color,
         }
 
     def _build_stats_embed(self, report: AuditReport) -> dict:
