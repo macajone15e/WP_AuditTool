@@ -5,6 +5,7 @@ Checks WHOIS, DNS records, SSL certificates, HSTS headers, and DNSSEC.
 
 import asyncio
 import contextlib
+import ipaddress
 import logging
 import socket
 import ssl
@@ -40,22 +41,23 @@ _CERT_EXPIRY_WARNING_DAYS = 14
 
 # Cloudflare detection patterns.
 _CLOUDFLARE_NS_SUFFIX = ".ns.cloudflare.com."
-# Cloudflare IPv4 ranges (major prefixes only for quick detection).
-_CLOUDFLARE_IPV4_PREFIXES = (
-    "104.16.", "104.17.", "104.18.", "104.19.", "104.20.",
-    "104.21.", "104.22.", "104.23.", "104.24.", "104.25.",
-    "104.26.", "104.27.", "104.28.",
-    "172.64.", "172.65.", "172.66.", "172.67.",
-    "173.245.",
-    "103.21.", "103.22.", "103.31.",
-    "141.101.",
-    "108.162.",
-    "190.93.",
-    "188.114.",
-    "197.234.",
-    "198.41.",
-    "162.158.",
-    "131.0.",
+# Cloudflare IPv4 ranges
+_CLOUDFLARE_IPV4_NETWORKS = (
+    ipaddress.ip_network("173.245.48.0/20"),
+    ipaddress.ip_network("103.21.244.0/22"),
+    ipaddress.ip_network("103.22.200.0/22"),
+    ipaddress.ip_network("103.31.4.0/22"),
+    ipaddress.ip_network("141.101.64.0/18"),
+    ipaddress.ip_network("108.162.192.0/18"),
+    ipaddress.ip_network("190.93.240.0/20"),
+    ipaddress.ip_network("188.114.96.0/20"),
+    ipaddress.ip_network("197.234.240.0/22"),
+    ipaddress.ip_network("198.41.128.0/17"),
+    ipaddress.ip_network("162.158.0.0/15"),
+    ipaddress.ip_network("104.16.0.0/13"),
+    ipaddress.ip_network("104.24.0.0/14"),
+    ipaddress.ip_network("172.64.0.0/13"),
+    ipaddress.ip_network("131.0.72.0/22"),
 )
 
 # Public DNSSEC-validating resolvers used for AD flag verification.
@@ -157,6 +159,7 @@ class DomainSecurityService:
             logger.warning("WHOIS lookup failed for %s: %s", domain, exc)
             return WhoisInfo(
                 status=DomainCheckStatus.ERROR,
+                reason=f"WHOIS lookup failed: {exc}",
                 error=str(exc),
             )
 
@@ -193,15 +196,24 @@ class DomainSecurityService:
             name_servers_raw = [name_servers_raw]
         name_servers = sorted({ns.lower().rstrip(".") for ns in name_servers_raw if ns})
 
-        # Determine overall status
+        # Determine overall status and reason
         check_status = DomainCheckStatus.PASS
+        reason_parts: list[str] = []
         if days_until_expiry is not None and days_until_expiry < 0:
             check_status = DomainCheckStatus.FAIL
-        elif (
-            (days_until_expiry is not None and days_until_expiry < _DOMAIN_EXPIRY_WARNING_DAYS)
-            or not transfer_locked
-        ):
+            reason_parts.append(f"Domain expired {abs(days_until_expiry)} days ago")
+        elif days_until_expiry is not None and days_until_expiry < _DOMAIN_EXPIRY_WARNING_DAYS:
             check_status = DomainCheckStatus.WARNING
+            reason_parts.append(
+                f"Domain expires in {days_until_expiry} days "
+                f"(threshold: {_DOMAIN_EXPIRY_WARNING_DAYS}d)",
+            )
+        if not transfer_locked:
+            if check_status == DomainCheckStatus.PASS:
+                check_status = DomainCheckStatus.WARNING
+            reason_parts.append(
+                "Transfer lock (clientTransferProhibited) is not enabled",
+            )
 
         return WhoisInfo(
             status=check_status,
@@ -215,6 +227,7 @@ class DomainSecurityService:
             registrant_name=registrant_name,
             registrant_org=registrant_org,
             name_servers=name_servers,
+            reason=" · ".join(reason_parts),
         )
 
     @staticmethod
@@ -251,6 +264,7 @@ class DomainSecurityService:
             logger.warning("DNS check failed for %s: %s", domain, exc)
             return DnsInfo(
                 status=DomainCheckStatus.ERROR,
+                reason=f"DNS resolution failed: {exc}",
                 error=str(exc),
             )
 
@@ -323,13 +337,33 @@ class DomainSecurityService:
 
         # www check
         www_resolves, www_target = self._check_www(resolver, domain)
+        if www_target:
+            try:
+                ip_addr = ipaddress.ip_address(www_target)
+                if any(ip_addr in net for net in _CLOUDFLARE_IPV4_NETWORKS):
+                    www_target = "☁️ Cloudflare proxy"
+            except ValueError:
+                pass
 
-        # Determine status
+        # Determine status and reason
         check_status = DomainCheckStatus.PASS
+        reason_parts: list[str] = []
         if not has_a and not has_aaaa:
             check_status = DomainCheckStatus.FAIL
-        elif not has_mx or not has_spf or not has_dmarc:
-            check_status = DomainCheckStatus.WARNING
+            reason_parts.append("No A or AAAA record found — domain does not resolve")
+        else:
+            missing_mail: list[str] = []
+            if not has_mx:
+                missing_mail.append("MX")
+            if not has_spf:
+                missing_mail.append("SPF")
+            if not has_dmarc:
+                missing_mail.append("DMARC")
+            if missing_mail:
+                check_status = DomainCheckStatus.WARNING
+                reason_parts.append(
+                    f"Missing email security records: {', '.join(missing_mail)}",
+                )
 
         if cloudflare_proxied:
             logger.info(
@@ -351,6 +385,7 @@ class DomainSecurityService:
             www_target=www_target,
             cloudflare_detected=cloudflare_ns,
             cloudflare_proxied=cloudflare_proxied,
+            reason=" · ".join(reason_parts),
         )
 
     @staticmethod
@@ -417,11 +452,14 @@ class DomainSecurityService:
     @staticmethod
     def _detect_cloudflare_ips(ip_values: list[str]) -> bool:
         """Return ``True`` if any IP belongs to a known Cloudflare range."""
-        return any(
-            ip.startswith(prefix)
-            for ip in ip_values
-            for prefix in _CLOUDFLARE_IPV4_PREFIXES
-        )
+        for ip_str in ip_values:
+            try:
+                ip_addr = ipaddress.ip_address(ip_str)
+                if any(ip_addr in net for net in _CLOUDFLARE_IPV4_NETWORKS):
+                    return True
+            except ValueError:
+                pass
+        return False
 
     # ------------------------------------------------------------------
     # SSL check
@@ -435,6 +473,7 @@ class DomainSecurityService:
             logger.warning("SSL check failed for %s: %s", domain, exc)
             return SslInfo(
                 status=DomainCheckStatus.FAIL,
+                reason=f"SSL connection failed: {exc}",
                 error=str(exc),
             )
 
@@ -453,17 +492,20 @@ class DomainSecurityService:
             return SslInfo(
                 status=DomainCheckStatus.FAIL,
                 is_valid=False,
+                reason=f"Certificate verification failed: {exc}",
                 error=f"Certificate verification failed: {exc}",
             )
         except (OSError, TimeoutError) as exc:
             return SslInfo(
                 status=DomainCheckStatus.FAIL,
+                reason=f"Could not connect on port 443: {exc}",
                 error=f"Connection failed: {exc}",
             )
 
         if not cert:
             return SslInfo(
                 status=DomainCheckStatus.FAIL,
+                reason="Server did not return an SSL certificate",
                 error="No certificate returned",
             )
 
@@ -504,14 +546,20 @@ class DomainSecurityService:
             delta = valid_to - datetime.now(tz=UTC)
             days_until_expiry = delta.days
 
-        # Status
+        # Status and reason
         is_valid = True
         check_status = DomainCheckStatus.PASS
+        reason = ""
         if days_until_expiry is not None and days_until_expiry < 0:
             check_status = DomainCheckStatus.FAIL
             is_valid = False
+            reason = f"SSL certificate expired {abs(days_until_expiry)} days ago"
         elif days_until_expiry is not None and days_until_expiry < _CERT_EXPIRY_WARNING_DAYS:
             check_status = DomainCheckStatus.WARNING
+            reason = (
+                f"SSL certificate expires in {days_until_expiry} days "
+                f"(threshold: {_CERT_EXPIRY_WARNING_DAYS}d)"
+            )
 
         return SslInfo(
             status=check_status,
@@ -523,6 +571,7 @@ class DomainSecurityService:
             days_until_expiry=days_until_expiry,
             protocol_version=protocol,
             is_valid=is_valid,
+            reason=reason,
         )
 
     @staticmethod
@@ -556,6 +605,7 @@ class DomainSecurityService:
             logger.warning("HSTS check failed for %s: %s", domain, exc)
             return HstsInfo(
                 status=DomainCheckStatus.ERROR,
+                reason=f"Could not check HSTS header: {exc}",
                 error=str(exc),
             )
 
@@ -563,6 +613,7 @@ class DomainSecurityService:
             return HstsInfo(
                 status=DomainCheckStatus.FAIL,
                 enabled=False,
+                reason="Strict-Transport-Security header is missing",
             )
 
         return self._parse_hsts(hsts_header)
@@ -585,10 +636,15 @@ class DomainSecurityService:
             elif directive == "preload":
                 preload = True
 
-        # Status logic
+        # Status logic and reason
         check_status = DomainCheckStatus.PASS
-        if max_age is not None and max_age < 31536000:  # Less than 1 year
+        reason = ""
+        if max_age is not None and max_age < 15552000:  # Less than 6 months (180 days)
             check_status = DomainCheckStatus.WARNING
+            reason = (
+                f"HSTS max-age is {max_age}s "
+                f"(recommended: ≥ 15552000s / 6 months)"
+            )
 
         return HstsInfo(
             status=check_status,
@@ -597,6 +653,7 @@ class DomainSecurityService:
             include_subdomains=include_subdomains,
             preload=preload,
             raw_header=header,
+            reason=reason,
         )
 
     # ------------------------------------------------------------------
@@ -611,6 +668,7 @@ class DomainSecurityService:
             logger.warning("DNSSEC check failed for %s: %s", domain, exc)
             return DnssecInfo(
                 status=DomainCheckStatus.ERROR,
+                reason=f"DNSSEC verification failed: {exc}",
                 error=str(exc),
             )
 
@@ -731,7 +789,8 @@ class DomainSecurityService:
         # DNSSEC is considered enabled if ANY reliable signal is positive.
         enabled = ad_flag or has_rrsig or (has_dnskey and has_ds)
 
-        # Status logic.
+        # Status logic and reason.
+        reason = ""
         if ad_flag or (has_dnskey and has_ds and has_rrsig):
             check_status = DomainCheckStatus.PASS
         elif enabled:
@@ -739,8 +798,18 @@ class DomainSecurityService:
             check_status = DomainCheckStatus.PASS
         elif has_dnskey or has_ds:
             check_status = DomainCheckStatus.WARNING
+            missing = []
+            if not has_dnskey:
+                missing.append("DNSKEY")
+            if not has_ds:
+                missing.append("DS")
+            reason = (
+                f"DNSSEC partially configured — "
+                f"missing: {', '.join(missing)}"
+            )
         else:
             check_status = DomainCheckStatus.FAIL
+            reason = "DNSSEC is not enabled on this domain"
 
         logger.info(
             "DNSSEC for %s: enabled=%s ad=%s rrsig=%s dnskey=%s ds=%s "
@@ -759,6 +828,7 @@ class DomainSecurityService:
             has_dnskey=has_dnskey,
             algorithm=algorithm,
             validation_method=validation_method,
+            reason=reason,
         )
 
     # -- DNSSEC helpers ------------------------------------------------

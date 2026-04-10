@@ -35,6 +35,7 @@ class WhoisInfo(BaseModel):
     registrant_name: str = ""
     registrant_org: str = ""
     name_servers: list[str] = Field(default_factory=list)
+    reason: str = ""
     error: str = ""
 
 
@@ -89,6 +90,7 @@ class DnsInfo(BaseModel):
     www_target: str = ""
     cloudflare_detected: bool = False
     cloudflare_proxied: bool = False
+    reason: str = ""
     error: str = ""
 
 
@@ -118,6 +120,7 @@ class SslInfo(BaseModel):
     days_until_expiry: int | None = None
     protocol_version: str = ""
     is_valid: bool = False
+    reason: str = ""
     error: str = ""
 
 
@@ -141,6 +144,7 @@ class HstsInfo(BaseModel):
     include_subdomains: bool = False
     preload: bool = False
     raw_header: str = ""
+    reason: str = ""
     error: str = ""
 
 
@@ -170,6 +174,7 @@ class DnssecInfo(BaseModel):
     has_dnskey: bool = False
     algorithm: str = ""
     validation_method: str = ""
+    reason: str = ""
     error: str = ""
 
 
