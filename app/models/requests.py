@@ -1,5 +1,3 @@
-"""Request models for API endpoints."""
-
 import re
 
 from pydantic import BaseModel, field_validator
@@ -40,3 +38,39 @@ class AuditRequest(BaseModel):
             msg = f"Invalid URL: {value}"
             raise ValueError(msg)
         return value
+
+
+class DomainAuditRequest(BaseModel):
+    """Incoming request to audit a domain's security posture.
+
+    Attributes:
+        domain: Target domain name (e.g. ``"example.com"``).
+        webhook_url: Optional Discord webhook URL to send results.
+
+    """
+
+    domain: str
+    webhook_url: str | None = None
+
+    @field_validator("domain")
+    @classmethod
+    def validate_domain(cls, value: str) -> str:
+        """Strip protocol and path, keep only the domain name."""
+        value = value.strip().lower()
+        # Remove protocol if present
+        for prefix in ("https://", "http://"):
+            if value.startswith(prefix):
+                value = value[len(prefix):]
+                break
+        # Remove path, query, fragment
+        value = value.split("/")[0].split("?")[0].split("#")[0]
+        # Remove port
+        value = value.split(":")[0]
+        # Remove www prefix for canonical form
+        if value.startswith("www."):
+            value = value[4:]
+        if not value or "." not in value:
+            msg = f"Invalid domain: {value}"
+            raise ValueError(msg)
+        return value
+

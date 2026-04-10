@@ -1,14 +1,16 @@
 # WP Audit Tool
 
-WordPress security audit tool using WPScan with Discord notifications.
+Comprehensive web security audit tool covering WordPress (WPScan) and Infrastructure (Domain, DNSSEC, SSL, HSTS) with automated Discord notifications.
 
 ## Features
 
-- **Full scan** via WPScan: WordPress version, plugins, themes, users, config backups, DB exports
+- **WordPress Audit** via WPScan: WordPress version, plugins, themes, users, config backups, DB exports
+- **Domain Security Audit**: WHOIS, DNSSEC validation, SSL certificates, HSTS policy checks
+- **Infrastructure Detection**: Cloudflare proxy detection with accurate IP resolution
 - **Vulnerability detection** with severity levels (critical, high, medium, low)
-- **Discord report** with rich and colorful embeds
+- **Discord report** with rich and colorful embeds (includes specific icons for proxies/security alerts)
 - **REST API** with auto-generated Swagger documentation
-- **Asynchronous scanning** — API responds immediately, scan runs in the background
+- **Flexible Execution** — Scans can run synchronously or asynchronously in the background
 
 ## Installation
 
@@ -98,7 +100,7 @@ The API will be available at `http://localhost:8000`
 
 Open `http://localhost:8000/docs` in your browser to access the Swagger UI.
 
-### Run an audit
+### Run a WordPress audit
 
 ```bash
 # With Discord webhook configured in .env
@@ -113,6 +115,16 @@ curl -X POST http://localhost:8000/audit \
     "url": "https://my-wordpress-site.com",
     "webhook_url": "https://discord.com/api/webhooks/..."
   }'
+```
+
+### Run a Domain Security audit
+
+Domain audits perform infrastructure-level security checks, such as SSL/TLS, DNSSEC, and proxy/WAF detection.
+
+```bash
+curl -X POST http://localhost:8000/domain-audit \
+  -H "Content-Type: application/json" \
+  -d '{"domain": "my-wordpress-site.com"}'
 ```
 
 ### Response
@@ -131,10 +143,11 @@ curl -X POST http://localhost:8000/audit \
 curl http://localhost:8000/health
 ```
 
-## Discord Report
+## Discord Reports
 
-The Discord report contains the following embeds:
+The Discord report is split into several sections based on the audit type:
 
+### WordPress Audit Embeds
 | Embed | Description |
 |---|---|
 | 🔍 **Main Report** | URL, WordPress version, server, active theme, security score |
@@ -145,6 +158,13 @@ The Discord report contains the following embeds:
 | 📁 **Sensitive Files** | Config backups, DB exports, TimThumbs |
 | 🔎 **Findings** | Interesting headers and exposed files |
 | 📊 **Statistics** | Duration, requests, transferred data |
+
+### Domain Security Audit Embeds
+| Embed | Description |
+|---|---|
+| 🌐 **Domain Info** | WHOIS data, creation/expiration dates, registrar |
+| 🛡️ **DNS & Infrastructure** | DNS Records, DNSSEC status, Cloudflare proxy detection |
+| 🔒 **Security Headers** | SSL/TLS certificates, HSTS caching duration |
 
 ## ⚠️ Warning
 

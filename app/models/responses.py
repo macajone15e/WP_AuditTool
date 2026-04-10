@@ -1,6 +1,5 @@
-"""Response models for API endpoints."""
-
 from pydantic import BaseModel
+from app.models.domain import DomainSecurityReport
 
 
 class AuditResponse(BaseModel):
@@ -33,3 +32,19 @@ class HealthResponse(BaseModel):
     wpscan_token_configured: bool
     discord_configured: bool
     version: str
+
+
+class DomainAuditResponse(BaseModel):
+    """Response returned by the domain-audit endpoint.
+
+    Attributes:
+        status: ``"completed"`` on success.
+        domain: Audited domain.
+        report: Full domain security report.
+
+    """
+
+    status: str
+    domain: str
+    report: DomainSecurityReport
+

@@ -57,3 +57,47 @@ SEVERITY_EMOJI: dict[str, str] = {
     Severity.LOW: "🟢",
     Severity.UNKNOWN: "⚪",
 }
+
+
+class DomainCheckStatus(StrEnum):
+    """Status of a domain security check."""
+
+    PASS = "pass"
+    WARNING = "warning"
+    FAIL = "fail"
+    ERROR = "error"
+    SKIPPED = "skipped"
+
+
+DOMAIN_CHECK_EMOJI: dict[str, str] = {
+    DomainCheckStatus.PASS: "✅",
+    DomainCheckStatus.WARNING: "⚠️",
+    DomainCheckStatus.FAIL: "❌",
+    DomainCheckStatus.ERROR: "💥",
+    DomainCheckStatus.SKIPPED: "⏭️",
+}
+
+DOMAIN_CHECK_COLOR: dict[str, int] = {
+    DomainCheckStatus.PASS: DISCORD_COLOR_GREEN,
+    DomainCheckStatus.WARNING: DISCORD_COLOR_YELLOW,
+    DomainCheckStatus.FAIL: DISCORD_COLOR_RED,
+    DomainCheckStatus.ERROR: DISCORD_COLOR_ORANGE,
+    DomainCheckStatus.SKIPPED: DISCORD_COLOR_DARK,
+}
+
+# WHOIS privacy proxy patterns (case-insensitive match in registrant fields).
+WHOIS_PRIVACY_PATTERNS: list[str] = [
+    "privacy",
+    "redacted",
+    "whoisguard",
+    "domains by proxy",
+    "contact privacy",
+    "withheld",
+    "data protected",
+    "not disclosed",
+    "identity protect",
+    "privacyprotect",
+    "whoisprivacy",
+    "domain protection",
+]
+

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from app.constants import Severity
+from app.models.domain import DomainSecurityReport
 
 
 # Shared / atomic models
@@ -281,4 +282,5 @@ class AuditReport(BaseModel):
     vulnerabilities_summary: VulnerabilitySummary = Field(
         default_factory=VulnerabilitySummary,
     )
+    domain_security: DomainSecurityReport | None = None
     scan_stats: ScanStats = Field(default_factory=ScanStats)

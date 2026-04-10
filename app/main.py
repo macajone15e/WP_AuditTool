@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.lifespan import lifespan
 from app.logging import setup_logging
-from app.routes import audit, health
+from app.routes import audit, domain, health
 
 setup_logging()
 
@@ -32,6 +32,7 @@ def create_app() -> FastAPI:
 
     application.include_router(health.router)
     application.include_router(audit.router)
+    application.include_router(domain.router)
 
     return application
 
