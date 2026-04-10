@@ -50,6 +50,7 @@ class DomainAuditRequest(BaseModel):
     """
 
     domain: str
+    webhook_url: str | None = None
 
     @field_validator("domain")
     @classmethod
