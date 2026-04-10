@@ -22,6 +22,7 @@ from app.constants import (
     Severity,
 )
 from app.models.audit import AuditReport, VulnerabilitySummary
+from app.models.domain import DomainSecurityReport
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,24 @@ class DiscordService:
         }
         payload = self._wrap_payload([embed])
         await self._post_payloads(webhook_url, [payload])
+
+    async def send_domain_report(self, webhook_url: str, report: DomainSecurityReport) -> list[dict]:
+        """Send a standalone domain security report to Discord.
+
+        Args:
+            webhook_url: Discord webhook URL.
+            report: The domain security report.
+
+        Returns:
+            List of response dicts with ``status`` and optional ``code`` keys.
+        """
+        dummy_report = AuditReport(target_url=report.domain, domain_security=report)
+        embed = self._build_domain_security_embed(dummy_report)
+        if not embed:
+            return []
+
+        payload = self._wrap_payload([embed])
+        return await self._post_payloads(webhook_url, [payload])
 
     # Payload construction
 
@@ -332,6 +351,8 @@ class DiscordService:
         # WHOIS section
         w = ds.whois
         lines.append(f"{emoji.get(w.status, '⚪')} **WHOIS**")
+        if w.reason:
+            lines.append(f"  ↳ 💬 _{w.reason}_")
         if w.status == DomainCheckStatus.ERROR:
             lines.append(f"  ↳ Error: {w.error[:100]}")
         else:
@@ -351,6 +372,8 @@ class DiscordService:
         if d.cloudflare_detected:
             dns_title = "**DNS Records** ☁️ Cloudflare"
         lines.append(f"\n{emoji.get(d.status, '⚪')} {dns_title}")
+        if d.reason:
+            lines.append(f"  ↳ 💬 _{d.reason}_")
         if d.status == DomainCheckStatus.ERROR:
             lines.append(f"  ↳ Error: {d.error[:100]}")
         else:
@@ -364,16 +387,37 @@ class DiscordService:
             if d.has_ns_record:
                 record_parts.append("NS")
             lines.append(f"  ↳ Records: {', '.join(record_parts) or 'None'}")
+            
             if d.cloudflare_proxied:
-                lines.append("  ↳ ⚠️ A/AAAA → Cloudflare proxy (real IP hidden)")
+                lines.append("  ↳ 🛡️ A/AAAA → Cloudflare proxy (real IP hidden)")
+            else:
+                a_records = [r.value for r in d.records if r.record_type == "A"]
+                if a_records:
+                    ips = ", ".join(f"`{ip}`" for ip in a_records[:3])
+                    if len(a_records) > 3:
+                        ips += f" (+{len(a_records) - 3} more)"
+                    lines.append(f"  ↳ IPv4: {ips}")
+
+                aaaa_records = [r.value for r in d.records if r.record_type == "AAAA"]
+                if aaaa_records:
+                    ips = ", ".join(f"`{ip}`" for ip in aaaa_records[:3])
+                    if len(aaaa_records) > 3:
+                        ips += f" (+{len(aaaa_records) - 3} more)"
+                    lines.append(f"  ↳ IPv6: {ips}")
+            if d.www_target:
+                www_target_str = d.www_target if d.www_target == "☁️ Cloudflare proxy" else f"`{d.www_target}`"
+            else:
+                www_target_str = ""
             lines.append(f"  ↳ www redirect: {'✅' if d.www_resolves else '❌'}"
-                         f"{f' → `{d.www_target}`' if d.www_target else ''}")
+                         f"{f' → {www_target_str}' if www_target_str else ''}")
             lines.append(f"  ↳ SPF: {'✅' if d.has_spf else '❌'}"
                          f" | DMARC: {'✅' if d.has_dmarc else '❌'}")
 
         # SSL section
         s = ds.ssl
         lines.append(f"\n{emoji.get(s.status, '⚪')} **SSL/TLS Certificate**")
+        if s.reason:
+            lines.append(f"  ↳ 💬 _{s.reason}_")
         if s.error:
             lines.append(f"  ↳ {s.error[:100]}")
         else:
@@ -386,6 +430,8 @@ class DiscordService:
         # HSTS section
         h = ds.hsts
         lines.append(f"\n{emoji.get(h.status, '⚪')} **HSTS**")
+        if h.reason:
+            lines.append(f"  ↳ 💬 _{h.reason}_")
         if h.error:
             lines.append(f"  ↳ Error: {h.error[:100]}")
         elif h.enabled:
@@ -401,6 +447,8 @@ class DiscordService:
         # DNSSEC section
         sec = ds.dnssec
         lines.append(f"\n{emoji.get(sec.status, '⚪')} **DNSSEC**")
+        if sec.reason:
+            lines.append(f"  ↳ 💬 _{sec.reason}_")
         if sec.error:
             lines.append(f"  ↳ Error: {sec.error[:100]}")
         elif sec.enabled:
